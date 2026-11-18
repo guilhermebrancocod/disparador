@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Mail,
   MessageCircle,
@@ -25,61 +25,25 @@ type EmailSettings = {
 };
 
 const defaultSettings: EmailSettings = {
-  senderName: "Guilherme Branco",
+  senderName: "",
   senderEmail: "",
-  subject: "Uma oportunidade para a {{empresa}}",
-  message: `Olá, {{empresa}}!
-
-Tudo bem?
-
-Trabalho com desenvolvimento de sistemas e automação de processos para empresas.
-
-Gostaria de apresentar algumas soluções que podem ajudar no seu negócio.
-
-Podemos agendar uma breve conversa?
-
-Atenciosamente,
-Guilherme Branco`,
+  subject: "",
+  message: "",
 };
 
 export function EmailSettings() {
   const [settings, setSettings] =
     useState<EmailSettings>(defaultSettings);
 
-  const [saved, setSaved] = useState(false);
-
-  useEffect(() => {
-    const stored = localStorage.getItem("prospect-email-settings");
-
-    if (stored) {
-      try {
-        setSettings({ ...defaultSettings, ...JSON.parse(stored) });
-      } catch {
-        console.error("Configurações locais inválidas");
-      }
-    }
-  }, []);
-
   function update<K extends keyof EmailSettings>(
     field: K,
     value: EmailSettings[K]
   ) {
     setSettings((prev) => ({ ...prev, [field]: value }));
-    setSaved(false);
-  }
-
-  function saveSettings() {
-    localStorage.setItem(
-      "prospect-email-settings",
-      JSON.stringify(settings)
-    );
-    setSaved(true);
   }
 
   function restoreSettings() {
     setSettings(defaultSettings);
-    localStorage.removeItem("prospect-email-settings");
-    setSaved(false);
   }
 
   function preview(text: string) {
@@ -197,7 +161,7 @@ export function EmailSettings() {
             </div>
 
             <div className="flex flex-wrap gap-3">
-              <Button onClick={saveSettings}>
+              <Button type="button" disabled>
                 <Save className="mr-2 size-4" />
                 Salvar configurações
               </Button>
@@ -211,11 +175,6 @@ export function EmailSettings() {
               </Button>
             </div>
 
-            {saved && (
-              <p className="text-sm text-green-600">
-                Configurações salvas neste navegador.
-              </p>
-            )}
           </CardContent>
         </Card>
       </div>

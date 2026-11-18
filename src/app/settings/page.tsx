@@ -1,7 +1,12 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import Link from "next/link"
+import { AuthPanel } from "@/components/auth-panel"
+import { accountFromUser } from "@/lib/account"
+import { startGoogleOAuth } from "@/lib/mail-actions"
+import { getSupabase } from "@/lib/supabase"
+import { useSession } from "@/lib/use-session"
 import {
   AlignCenter,
   AlignLeft,
@@ -29,15 +34,21 @@ import {
   X,
 } from "lucide-react"
 
-const defaultMessage = `Olá, {{empresa}}!
+type ChannelSnapshot = {
+  enabled: boolean
+  sender: string
+  email: string
+  subject: string
+  message: string
+}
 
-Tudo bem?
-
-Trabalho com desenvolvimento de sistemas e automação de processos para o setor automotivo.
-
-Gostaria de apresentar algumas soluções que podem ajudar no seu negócio.
-
-Podemos agendar uma breve conversa?`
+const emptyChannel: ChannelSnapshot = {
+  enabled: false,
+  sender: "",
+  email: "",
+  subject: "",
+  message: "",
+}
 
 const tabs = [
   { label: "Canais", icon: Box },
@@ -47,26 +58,127 @@ const tabs = [
 ]
 
 export default function SettingsPage() {
+  const { user, loading: sessionLoading, configError, refresh: refreshSession } = useSession()
+  const account = accountFromUser(user)
   const [menuOpen, setMenuOpen] = useState(false)
   const [activeTab, setActiveTab] = useState("Canais")
   const [channel, setChannel] = useState<"email" | "whatsapp">("email")
-  const [enabled, setEnabled] = useState(true)
-  const [sender, setSender] = useState("Guilherme Branco")
-  const [email, setEmail] = useState("guilherme@mail.com")
-  const [subject, setSubject] = useState("Uma oportunidade para a {{empresa}}")
-  const [message, setMessage] = useState(defaultMessage)
+  const [enabled, setEnabled] = useState(false)
+  const [sender, setSender] = useState("")
+  const [email, setEmail] = useState("")
+  const [subject, setSubject] = useState("")
+  const [message, setMessage] = useState("")
+  const [snapshot, setSnapshot] = useState<ChannelSnapshot>(emptyChannel)
   const [saved, setSaved] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [connecting, setConnecting] = useState(false)
+
+  useEffect(() => {
+    if (sessionLoading || !user) return
+
+    const supabase = getSupabase()
+    if (!supabase) return
+
+    void supabase
+      .from("channels")
+      .select("enabled, sender_name, sender_address, subject, message")
+      .eq("user_id", user.id)
+      .eq("type", "email")
+      .maybeSingle()
+      .then(({ data, error: queryError }) => {
+        if (queryError) {
+          setError(queryError.message)
+          return
+        }
+
+        const next = data
+          ? {
+              enabled: data.enabled,
+              sender: data.sender_name ?? "",
+              email: data.sender_address ?? "",
+              subject: data.subject ?? "",
+              message: data.message ?? "",
+            }
+          : emptyChannel
+
+        setEnabled(next.enabled)
+        setSender(next.sender)
+        setEmail(next.email)
+        setSubject(next.subject)
+        setMessage(next.message)
+        setSnapshot(next)
+      })
+  }, [sessionLoading, user])
 
   const restoreDefaults = () => {
-    setSender("Guilherme Branco")
-    setEmail("guilherme@mail.com")
-    setSubject("Uma oportunidade para a {{empresa}}")
-    setMessage(defaultMessage)
+    setEnabled(snapshot.enabled)
+    setSender(snapshot.sender)
+    setEmail(snapshot.email)
+    setSubject(snapshot.subject)
+    setMessage(snapshot.message)
+    setSaved(false)
   }
 
-  const save = () => {
+  const save = async () => {
+    if (!user) {
+      setError("Entre na conta antes de salvar.")
+      return
+    }
+
+    const supabase = getSupabase()
+    if (!supabase) return
+
+    setSaving(true)
+    setError(null)
+
+    const next = { enabled, sender, email, subject, message }
+    const { error: saveError } = await supabase.from("channels").upsert(
+      {
+        user_id: user.id,
+        type: "email",
+        enabled,
+        sender_name: sender,
+        sender_address: email,
+        subject,
+        message,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id,type" }
+    )
+
+    setSaving(false)
+
+    if (saveError) {
+      setError(saveError.message)
+      return
+    }
+
+    setSnapshot(next)
     setSaved(true)
     window.setTimeout(() => setSaved(false), 1800)
+  }
+
+  async function connectGmail() {
+    setConnecting(true)
+    setError(null)
+    try {
+      await startGoogleOAuth()
+    } catch (connectError) {
+      setError(connectError instanceof Error ? connectError.message : "Não foi possível conectar o Gmail.")
+      setConnecting(false)
+    }
+  }
+
+  async function signOut() {
+    await getSupabase()?.auth.signOut()
+    setEnabled(false)
+    setSender("")
+    setEmail("")
+    setSubject("")
+    setMessage("")
+    setSnapshot(emptyChannel)
+    await refreshSession()
   }
 
   const preview = (text: string) => text.replaceAll("{{empresa}}", "Loja Alpha")
@@ -97,12 +209,17 @@ export default function SettingsPage() {
 
         <div className="border-t border-white/8 p-5">
           <div className="flex items-center gap-3">
-            <span className="grid size-10 shrink-0 place-items-center rounded-full bg-gradient-to-br from-indigo-400 to-violet-700 text-xs font-bold">GB</span>
+            <span className="grid size-10 shrink-0 place-items-center rounded-full bg-gradient-to-br from-indigo-400 to-violet-700 text-xs font-bold">{account.initials}</span>
             <div className="min-w-0">
-              <p className="truncate text-sm font-semibold">Guilherme Branco</p>
-              <p className="truncate text-xs text-slate-400">guilherme@mail.com</p>
+              <p className="truncate text-sm font-semibold">{account.name}</p>
+              <p className="truncate text-xs text-slate-400">{account.email}</p>
             </div>
           </div>
+          {user && (
+            <button onClick={() => void signOut()} className="mt-3 text-xs font-semibold text-slate-300 hover:text-white">
+              Sair
+            </button>
+          )}
         </div>
       </aside>
 
@@ -132,7 +249,29 @@ export default function SettingsPage() {
         </header>
 
         <div className="mx-auto max-w-[1440px] px-4 py-5 sm:px-7 lg:px-9">
-          {activeTab !== "Canais" ? (
+          {configError && (
+            <p className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">{configError}</p>
+          )}
+          {error && (
+            <p className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p>
+          )}
+          {!sessionLoading && !user && !configError && (
+            <AuthPanel onAuthenticated={() => void refreshSession()} />
+          )}
+
+          {activeTab === "Integrações" ? (
+            <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+              <h2 className="text-xl font-bold">Gmail</h2>
+              <p className="mt-2 max-w-lg text-sm text-slate-500">Conecte a conta que envia os disparos. O Google devolve o acesso para /api/auth/google/callback.</p>
+              <button
+                onClick={() => void connectGmail()}
+                disabled={!user || connecting}
+                className="mt-5 flex h-10 items-center gap-2 rounded-lg bg-violet-700 px-4 text-sm font-semibold text-white hover:bg-violet-800 disabled:opacity-60"
+              >
+                <Mail className="size-4" /> {connecting ? "Redirecionando..." : "Conectar Gmail"}
+              </button>
+            </section>
+          ) : activeTab !== "Canais" ? (
             <section className="grid min-h-[480px] place-items-center rounded-xl border border-slate-200 bg-white p-8 text-center shadow-sm">
               <div>
                 <span className="mx-auto mb-4 grid size-14 place-items-center rounded-full bg-violet-50 text-violet-700"><SlidersHorizontal className="size-6" /></span>
@@ -148,7 +287,7 @@ export default function SettingsPage() {
                   <button onClick={() => setChannel("email")} className={`flex w-full items-center gap-3 rounded-xl border p-4 text-left transition ${channel === "email" ? "border-violet-200 bg-violet-50/70" : "border-transparent hover:bg-slate-50"}`}>
                     <span className="grid size-10 place-items-center rounded-lg bg-white text-violet-700 shadow-sm"><Mail className="size-5" /></span>
                     <span className="min-w-0 flex-1">
-                      <span className="flex items-center gap-2 font-bold">E-mail <small className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-700">Ativado</small></span>
+                      <span className="flex items-center gap-2 font-bold">E-mail <small className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${enabled ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{enabled ? "Ativado" : "Desativado"}</small></span>
                       <span className="mt-1 block text-xs text-slate-500">Configurar remetente, assinatura e limites</span>
                     </span>
                     <ChevronRight className="size-5 text-violet-700" />
@@ -236,10 +375,10 @@ export default function SettingsPage() {
                     </div>
 
                     <div className="mt-5 flex flex-wrap gap-3">
-                      <button onClick={save} className="flex h-10 items-center gap-2 rounded-lg bg-violet-700 px-4 text-sm font-semibold text-white transition hover:bg-violet-800">
-                        {saved ? <Check className="size-4" /> : <Save className="size-4" />} {saved ? "Configurações salvas" : "Salvar configurações"}
+                      <button onClick={() => void save()} disabled={saving || !user} className="flex h-10 items-center gap-2 rounded-lg bg-violet-700 px-4 text-sm font-semibold text-white transition hover:bg-violet-800 disabled:opacity-60">
+                        {saved ? <Check className="size-4" /> : <Save className="size-4" />} {saved ? "Configurações salvas" : saving ? "Salvando..." : "Salvar configurações"}
                       </button>
-                      <button onClick={restoreDefaults} className="flex h-10 items-center gap-2 rounded-lg border border-slate-200 px-4 text-sm font-semibold transition hover:bg-slate-50"><RotateCcw className="size-4" /> Restaurar padrão</button>
+                      <button onClick={restoreDefaults} className="flex h-10 items-center gap-2 rounded-lg border border-slate-200 px-4 text-sm font-semibold transition hover:bg-slate-50"><RotateCcw className="size-4" /> Descartar alterações</button>
                     </div>
                   </div>
                 </section>
